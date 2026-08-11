@@ -25,16 +25,17 @@ if not os.path.exists(PDF_KLASORU):
     os.makedirs(PDF_KLASORU)
 
 # Groq API anahtarı
-API_KEY = "gsk_B9HydSBErFdV4vb7f89RWgdyb3Fyg0XmkHJAsRYZnGT8bgd3zJb"
+API_KEY = os.environ.get("GROQ_API_KEY")
 client = Groq(api_key=API_KEY)
 
 
-# SQLAlchemy Model Tanımları (Kullanıcı ID eklendi)
+# SQLAlchemy Model Tanımları
 class Kullanici(db.Model):
     __tablename__ = 'kullanicilar'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     kullanici_adi = db.Column(db.String(80), unique=True, nullable=False)
     sifre = db.Column(db.String(120), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False)  # Admin yetkisi alanı
 
 class Sohbet(db.Model):
     __tablename__ = 'sohbetler'
@@ -113,7 +114,12 @@ HTML_SABLONU = """
 </head>
 <body class="bg-gray-100 min-h-screen p-4">
     <div class="max-w-6xl mx-auto flex justify-between items-center mb-4 px-2">
-        <span class="text-sm font-semibold text-gray-700">👤 Kullanıcı: <span class="text-purple-600 font-bold">{{ session.get('kullanici_adi') }}</span></span>
+        <div class="flex items-center gap-4">
+            <span class="text-sm font-semibold text-gray-700">👤 Kullanıcı: <span class="text-purple-600 font-bold">{{ session.get('kullanici_adi') }}</span></span>
+            {% if session.get('is_admin') %}
+                <a href="/admin" class="text-xs bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 transition shadow-sm">👑 Admin Paneli</a>
+            {% endif %}
+        </div>
         <a href="/cikis" class="text-xs bg-red-500 text-white px-3 py-1.5 rounded-lg hover:bg-red-600 transition shadow-sm">Çıkış Yap</a>
     </div>
 
@@ -140,7 +146,7 @@ HTML_SABLONU = """
 
         <div class="md:col-span-3 bg-white p-6 rounded-xl shadow-md space-y-4 flex flex-col h-[85vh]">
             <h1 class="text-2xl font-bold text-gray-800">Akıllı Asistan</h1>
-            
+
             <form action="/islem" method="post" class="p-3 bg-gray-50 rounded-lg border space-y-3">
                 <div>
                     <label class="block font-semibold mb-1 text-gray-700 text-sm">Yeni PDF Yükle</label>
@@ -312,9 +318,71 @@ KAYIT_SABLONU = """
 </html>
 """
 
+# --- YENİ: ADMİN PANELİ ŞABLONU ---
+ADMIN_SABLONU = """
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Paneli - Kullanıcı Yönetimi</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-6">
+    <div class="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-md space-y-6">
+        <div class="flex justify-between items-center border-b pb-4">
+            <h1 class="text-2xl font-bold text-gray-800">👑 Admin Paneli (Kullanıcı Listesi)</h1>
+            <a href="/" class="bg-gray-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-gray-600 transition">Ana Sayfaya Dön</a>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-gray-100 border-b text-sm text-gray-700">
+                        <th class="p-3">ID</th>
+                        <th class="p-3">Kullanıcı Adı</th>
+                        <th class="p-3">Yetki Durumu</th>
+                        <th class="p-3 text-right">İşlemler</th>
+                    </tr>
+                </thead>
+                <tbody class="text-sm divide-y">
+                    {% for k in kullanicilar %}
+                    <tr class="hover:bg-gray-50">
+                        <td class="p-3 text-gray-600">{{ k.id }}</td>
+                        <td class="p-3 font-semibold text-gray-800">{{ k.kullanici_adi }}</td>
+                        <td class="p-3">
+                            {% if k.is_admin %}
+                                <span class="bg-purple-100 text-purple-700 px-2.5 py-1 rounded-full text-xs font-bold">Admin</span>
+                            {% else %}
+                                <span class="bg-gray-100 text-gray-600 px-2.5 py-1 rounded-full text-xs">Normal Kullanıcı</span>
+                            {% endif %}
+                        </td>
+                        <td class="p-3 text-right">
+                            {% if k.id != session.get('user_id') %}
+                            <form action="/admin/kullanici-sil/{{ k.id }}" method="POST" onsubmit="return confirm('Bu kullanıcıyı ve tüm verilerini silmek istediğinize emin misiniz?');" class="inline">
+                                <button type="submit" class="bg-red-500 text-white px-3 py-1 rounded text-xs hover:bg-red-600 transition">Hesabı Sil</button>
+                            </form>
+                            {% else %}
+                            <span class="text-xs text-gray-400 italic">(Aktif Hesabınız)</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
 
 with app.app_context():
     db.create_all()
+    # İlk kayıt olan veya ilk kullanıcıyı otomatik admin yapma garantisi (İsteğe bağlı)
+    ilk_kullanici = Kullanici.query.first()
+    if ilk_kullanici and not ilk_kullanici.is_admin:
+        ilk_kullanici.is_admin = True
+        db.session.commit()
 
 
 # Rotalar
@@ -327,6 +395,7 @@ def giris():
         if user:
             session['user_id'] = user.id
             session['kullanici_adi'] = user.kullanici_adi
+            session['is_admin'] = user.is_admin  # Oturuma admin yetkisini kaydediyoruz
             return redirect(url_for('index'))
         else:
             flash("Hatalı kullanıcı adı veya şifre!", "danger")
@@ -338,12 +407,16 @@ def kayit():
     if request.method == "POST":
         k_adi = request.form.get("kullanici_adi")
         sifre = request.form.get("sifre")
-        
+
         mevcut = Kullanici.query.filter_by(kullanici_adi=k_adi).first()
         if mevcut:
             flash("Bu kullanıcı adı zaten alınmış!", "danger")
         else:
-            yeni_user = Kullanici(kullanici_adi=k_adi, sifre=sifre)
+            # Sistemdeki ilk kullanıcı ise direkt admin yapalım
+            toplam_kullanici = Kullanici.query.count()
+            yeni_admin_durumu = (toplam_kullanici == 0)
+
+            yeni_user = Kullanici(kullanici_adi=k_adi, sifre=sifre, is_admin=yeni_admin_durumu)
             db.session.add(yeni_user)
             db.session.commit()
             flash("Kayıt başarılı! Şimdi giriş yapabilirsiniz.", "success")
@@ -357,11 +430,42 @@ def cikis():
     return redirect(url_for('giris'))
 
 
+# --- YENİ: ADMİN PANELİ ROTALARI ---
+@app.route("/admin")
+def admin_paneli():
+    # Güvenlik kontrolü: Sadece giriş yapmış VE is_admin değeri True olanlar görebilir
+    if 'user_id' not in session or not session.get('is_admin'):
+        return redirect(url_for('giris'))
+
+    kullanicilar = Kullanici.query.all()
+    return render_template_string(ADMIN_SABLONU, kullanicilar=kullanicilar)
+
+
+@app.route("/admin/kullanici-sil/<int:user_id>", methods=["POST"])
+def admin_kullanici_sil(user_id):
+    if 'user_id' not in session or not session.get('is_admin'):
+        return redirect(url_for('giris'))
+
+    # Kendini silmesini engelle
+    if user_id == session['user_id']:
+        return redirect(url_for('admin_paneli'))
+
+    hedef_kullanici = Kullanici.query.get(user_id)
+    if hedef_kullanici:
+        # Önce kullanıcının sohbet geçmişini veritabanından tamamen silelim
+        Sohbet.query.filter_by(user_id=user_id).delete()
+        # Sonra kullanıcıyı silelim
+        db.session.delete(hedef_kullanici)
+        db.session.commit()
+
+    return redirect(url_for('admin_paneli'))
+
+
 @app.route("/")
 def index():
     if 'user_id' not in session:
         return redirect(url_for('giris'))
-        
+
     user_id = session['user_id']
     gecmis = gecmisi_getir(user_id)
     pdf_listesi = yuklenen_pdf_leri_getir(user_id)
@@ -405,7 +509,7 @@ def upload_file():
 def delete_pdf(pdf_adi):
     if 'user_id' not in session:
         return redirect(url_for('giris'))
-    
+
     # Sadece o kullanıcının sohbetlerini sil
     Sohbet.query.filter_by(user_id=session['user_id'], pdf_adi=pdf_adi).delete()
     db.session.commit()
@@ -498,5 +602,5 @@ def islem():
     return index()
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+with app.app_context():
+    db.create_all()
